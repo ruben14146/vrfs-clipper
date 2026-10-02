@@ -1,0 +1,125 @@
+name: VRFS goal clips
+# Records the goals queued on matchstats.rubenplayz.com in the real VRFS replay viewer (Camera.exe + CasterCamMod)
+# and uploads the videos back to the site. This repo is public only so Actions minutes are free; it holds no code.
+#
+# 1. "plan" asks the site how to split the queued replays over up to 4 machines (empty queue = nothing runs).
+# 2. Each machine gets the viewer (cached; first time downloaded from the site with the admin key), records its
+#    share and uploads the clips. The admin key is the MATCHSTATS_KEY secret and only ever lives in env vars.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Stop starting new clips after this many minutes'
+        default: '50'
+      machines:
+        description: 'Most machines to record on at once'
+        default: '4'
+  schedule:
+    - cron: '*/20 * * * *'   # safety net: picks up anything queued while nothing was running
+concurrency:
+  group: clips
+  cancel-in-progress: false
+permissions:
+  contents: read
+env:
+  SITE: https://matchstats.rubenplayz.com
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shares: ${{ steps.plan.outputs.shares }}
+    steps:
+      - id: plan
+        env:
+          KEY: ${{ secrets.MATCHSTATS_KEY }}
+          MACHINES: ${{ github.event.inputs.machines || '4' }}
+        run: |
+          shares=$(curl -sf -H "x-admin-key: $KEY" "$SITE/api/clips/plan?machines=$MACHINES" || echo '[]')
+          echo "shares=$shares" >> "$GITHUB_OUTPUT"
+          echo "Replays per machine: $shares"
+
+  clips:
+    needs: plan
+    if: needs.plan.outputs.shares != '[]' && needs.plan.outputs.shares != ''
+    runs-on: windows-latest
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        codes: ${{ fromJSON(needs.plan.outputs.shares) }}
+    env:
+      VIEWER: C:\viewer
+    steps:
+      - uses: actions/setup-dotnet@v4          # MelonLoader runs the mod on the .NET 6 runtime
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Restore the viewer from cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\viewer
+          key: viewer-v1
+
+      - name: Download the viewer (first run / cache expired)
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.MATCHSTATS_KEY }}
+        run: |
+          New-Item -ItemType Directory -Force $env:VIEWER, C:\dl | Out-Null
+          $out = [IO.File]::Create("C:\dl\viewer.zip")
+          foreach ($n in '000', '001', '002') {
+            curl.exe -sSf --retry 5 -H "x-admin-key: $env:KEY" -o "C:\dl\part" "$env:SITE/api/clipper/viewer.zip.$n"
+            if ($LASTEXITCODE -ne 0) { throw "viewer part $n didn't download" }
+            $in = [IO.File]::OpenRead("C:\dl\part"); $in.CopyTo($out); $in.Close(); Remove-Item C:\dl\part
+          }
+          $out.Close()
+          tar -xf C:\dl\viewer.zip -C $env:VIEWER
+          Remove-Item C:\dl\viewer.zip
+
+      - name: Save the viewer to cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        continue-on-error: true                # several machines may try at once; one saving it is enough
+        uses: actions/cache/save@v4
+        with:
+          path: C:\viewer
+          key: viewer-v1
+
+      - name: Latest mod
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.MATCHSTATS_KEY }}
+        run: |
+          curl.exe -sSf --retry 5 -H "x-admin-key: $env:KEY" -o "$env:VIEWER\Camera\Mods\CasterCamMod.dll" "$env:SITE/api/clipper/CasterCamMod.dll"
+          if ($LASTEXITCODE -ne 0) { throw "the mod didn't download" }
+
+      - name: Record this machine's goals
+        shell: pwsh
+        env:
+          CCM_CI: '1'
+          CCM_KEY: ${{ secrets.MATCHSTATS_KEY }}
+          CCM_CODES: ${{ matrix.codes }}
+          CCM_MAXMIN: ${{ github.event.inputs.minutes || '50' }}
+        run: |
+          # a 16:9 desktop (the runner's default is 1024x768)
+          try { Set-DisplayResolution -Width 1280 -Height 720 -Force } catch { Write-Host "couldn't set the resolution: $_" }
+          $cam = "$env:VIEWER\Camera"
+          $camArgs = @('-ccm-ci', '-screen-width', '1280', '-screen-height', '720', '-screen-fullscreen', '0', '-force-d3d11',
+                    '-logFile', "$cam\player.log", '--melonloader.disablestartscreen')
+          $p = Start-Process -FilePath "$cam\Camera.exe" -ArgumentList $camArgs -WorkingDirectory $cam -PassThru
+          $limit = ([int]$env:CCM_MAXMIN + 25) * 60 * 1000
+          if (-not $p.WaitForExit($limit)) { Write-Host "Viewer still running after the time limit - stopping it."; Stop-Process -Id $p.Id -Force }
+          Write-Host "---- mod log (clips) ----"
+          Select-String -Path "$cam\MelonLoader\Latest.log" -Pattern 'clips:|ci:|ERROR|Exception' | Select-Object -Last 80 | ForEach-Object { $_.Line }
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clip-run-logs-${{ strategy.job-index }}
+          retention-days: 3
+          path: |
+            C:\viewer\Camera\MelonLoader\Latest.log
+            C:\viewer\Camera\player.log
