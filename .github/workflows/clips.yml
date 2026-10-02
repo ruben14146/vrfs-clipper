@@ -16,9 +16,7 @@ on:
         default: '4'
   schedule:
     - cron: '*/20 * * * *'   # safety net: picks up anything queued while nothing was running
-concurrency:
-  group: clips
-  cancel-in-progress: false
+# no concurrency group: runs start straight away side by side - the site hands each run only goals nobody has taken yet
 permissions:
   contents: read
 env:
