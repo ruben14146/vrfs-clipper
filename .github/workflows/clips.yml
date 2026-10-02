@@ -121,3 +121,4 @@ jobs:
           path: |
             C:\viewer\Camera\MelonLoader\Latest.log
             C:\viewer\Camera\player.log
+            C:\viewer\Camera\Mods\rigdump.json
