@@ -1,5 +1,6 @@
-name: VRFS goal clips
-# Records the goals queued on matchstats.rubenplayz.com in the real VRFS replay viewer (Camera.exe + CasterCamMod)
+name: VRFS 3-man clips (CasterCamMod)
+# Records the 3-man clips queued on matchstats.rubenplayz.com in the real VRFS replay viewer (Camera.exe + CasterCamMod)
+# (goals are recorded by goals.yml with the standalone Replay Viewer)
 # and uploads the videos back to the site. This repo is public only so Actions minutes are free; it holds no code.
 #
 # 1. "plan" asks the site how to split the queued replays over up to 4 machines (empty queue = nothing runs).
@@ -33,7 +34,7 @@ jobs:
           KEY: ${{ secrets.MATCHSTATS_KEY }}
           MACHINES: ${{ github.event.inputs.machines || '4' }}
         run: |
-          shares=$(curl -sf -H "x-admin-key: $KEY" "$SITE/api/clips/plan?machines=$MACHINES" || echo '[]')
+          shares=$(curl -sf -H "x-admin-key: $KEY" "$SITE/api/clips/plan?kind=3man&machines=$MACHINES" || echo '[]')
           echo "shares=$shares" >> "$GITHUB_OUTPUT"
           echo "Replays per machine: $shares"
 
