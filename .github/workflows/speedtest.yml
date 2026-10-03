@@ -1,0 +1,65 @@
+name: Speed test - own replay viewer
+# One-off comparison: records a goal with the standalone Replay Viewer (instead of Camera.exe + CasterCamMod) on the same
+# kind of machine, and keeps the timings + the clip. Doesn't touch the site's clip queue.
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: 'Replay code'
+        default: '7084831258629'
+      times:
+        description: 'Goal replay times (comma separated)'
+        default: '3827.31'
+      fps:
+        description: 'Frames per second'
+        default: '30'
+permissions:
+  contents: read
+env:
+  SITE: https://matchstats.rubenplayz.com
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Download the Replay Viewer
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.MATCHSTATS_KEY }}
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          New-Item -ItemType Directory -Force C:\rv, C:\dl | Out-Null
+          curl.exe -sSf --retry 5 -H "x-admin-key: $env:KEY" -o C:\dl\rv.zip "$env:SITE/api/clipper/replayviewer.zip"
+          if ($LASTEXITCODE -ne 0) { throw "download failed" }
+          tar -xf C:\dl\rv.zip -C C:\rv
+          Write-Host "TIMING download+unzip: $([int]$sw.Elapsed.TotalSeconds) s"
+
+      - name: Restore the old viewer from cache (only for its ffmpeg - same encoder as the real clipper)
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\viewer
+          key: viewer-v1
+
+      - name: Record
+        shell: pwsh
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force } catch { Write-Host "couldn't set the resolution: $_" }
+          $exe = Get-ChildItem C:\rv -Recurse -Filter VRFSReplay.exe | Select-Object -First 1
+          $ff = "C:\viewer\Camera\Mods\tools\ffmpeg.exe"
+          if (-not (Test-Path $ff)) { $ff = "ffmpeg" }
+          New-Item -ItemType Directory -Force C:\out | Out-Null
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $a = @('-screen-width','1920','-screen-height','1080','-screen-fullscreen','0','-popupwindow','-force-d3d11','-logFile','C:\out\player.log',
+                 '-clip','${{ github.event.inputs.code }}','-cliptimes','${{ github.event.inputs.times }}','-fps','${{ github.event.inputs.fps }}','-clipout','C:\out','-ffmpeg',"`"$ff`"")
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList $a -PassThru
+          if (-not $p.WaitForExit(50 * 60 * 1000)) { Stop-Process -Id $p.Id -Force; Write-Host "timed out" }
+          Write-Host "TIMING viewer process total: $([int]$sw.Elapsed.TotalSeconds) s"
+          Select-String -Path C:\out\player.log -Pattern '\[clip\]|Exception|error' | ForEach-Object { $_.Line }
+
+      - name: Keep the clip and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: speedtest
+          retention-days: 3
+          path: C:\out
