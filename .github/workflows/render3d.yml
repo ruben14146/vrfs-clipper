@@ -1,0 +1,56 @@
+name: VRFS highlight clips (3D)
+# Every goal / 3-man queued on matchstats.rubenplayz.com is rendered in 3D (the replay's own map, bodies, items, kits and nets) in headless Chrome:
+# one machine per clip, all at once, each making the default-camera clip and the scorer's first-person clip and uploading them.
+# This repo is public so Actions minutes are free; it holds no code of the site, only this workflow and the small renderer script.
+#
+# 1. "plan" asks the site which clips are waiting (one shard per clip; empty = nothing runs).
+# 2. Each machine renders its clip with renderer/render.js. The admin key is the MATCHSTATS_KEY secret and only ever lives in an env var.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7,27,47 * * * *'   # safety net: anything queued while nothing was running (the site also starts this the moment a game is saved)
+permissions:
+  contents: read
+env:
+  SITE: https://matchstats.rubenplayz.com
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - id: plan
+        env:
+          KEY: ${{ secrets.MATCHSTATS_KEY }}
+        run: |
+          shards=$(curl -sf -H "x-admin-key: $KEY" "$SITE/api/clips/plan?machines=20" || echo '[]')
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "Clips to render: $shards"
+
+  render:
+    needs: plan
+    if: needs.plan.outputs.shards != '[]' && needs.plan.outputs.shards != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: renderer/package-lock.json
+      - name: Install the renderer
+        working-directory: renderer
+        run: npm ci
+      - name: Render this clip
+        working-directory: renderer
+        env:
+          KEY: ${{ secrets.MATCHSTATS_KEY }}
+          CHROME: /usr/bin/google-chrome
+        run: node render.js --shard "${{ matrix.shard }}"

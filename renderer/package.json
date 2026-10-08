@@ -1,0 +1,11 @@
+{
+  "name": "vrfs-render",
+  "version": "1.0.0",
+  "description": "3D highlight renderer",
+  "main": "render.js",
+  "type": "commonjs",
+  "dependencies": {
+    "puppeteer-core": "^25.12.0"
+  },
+  "private": true
+}
